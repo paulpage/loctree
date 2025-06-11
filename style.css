@@ -1,0 +1,36 @@
+/* Prevent content shift when scrollbar appears */
+html {
+  overflow-y: scroll; /* fallback for Safari */
+}
+@supports (scrollbar-gutter: stable) {
+  html {
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+}
+
+html {
+    font-family: sans-serif;
+}
+
+details {
+    padding: 0 0 0 10px;
+    margin: 0;
+}
+
+p {
+    padding: 0 0 0 25px;
+    margin: 0;
+}
+
+#filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px; /* space between checkboxes */
+}
+.checkbox-wrapper {
+    /* display: flex; */
+    /* flex-direction: column; */
+    /* align-items: center; */
+    /* font-family: sans-serif; */
+}
