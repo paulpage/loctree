@@ -6,14 +6,14 @@
     <title>Application</title>
     <meta charset="utf-8">
     <!--<link rel="icon" href="favicon.ico" type="image/x-icon">-->
-    <link rel="stylesheet" type="text/css" href="style.css">
-    <script src="main.js"></script>
-    <script src="data.js"></script>
+    <link rel="stylesheet" type="text/css" href="static/css/style.css">
+    <script src="static/js/htmx.min.js"></script>
+    <script src="static/js/main.js"></script>
   </head>
   <body>
     <button onclick="collapseAll()">Collapse All</button>
     <button onclick="expandAll()">Expand All</button>
     <div id="filters"></div>
-    <div id="tree"></div>
+    <div id="tree" hx-get="/tree" hx-trigger="load"></div>
   </body>
 </html>

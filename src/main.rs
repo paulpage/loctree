@@ -1,73 +1,175 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tokei::{Config, Languages};
+use std::fs::File;
+use std::io::Write;
+use std::time::Instant;
+use axum::{
+    routing::get,
+    Router,
+    http::StatusCode,
+    extract::{Path, State},
+    response::Html,
+};
+use tower_http::services::ServeDir;
 
-#[derive(Copy, Clone, Default)]
+// #[derive(Copy, Clone, Default)]
+// struct Stats {
+//     code: usize,
+//     comments: usize,
+//     blanks: usize,
+// }
+
+// #[derive(Clone)]
+// struct StatsNode {
+//     stats: BTreeMap<String, Stats>,
+//     path: Vec<String>,
+//     children: BTreeMap<String, Stats>,
+// }
+
+// struct StatsEntry {
+//     language: String,
+//     path: String,
+//     code: usize,
+//     comments: usize,
+//     blanks: usize,
+// }
+
+// impl StatsNode {
+//     pub fn new(path: &[String]) -> Self {
+//         Self {
+//             stats: BTreeMap::new(),
+//             path: path.to_vec(),
+//             children: BTreeMap::new(),
+//         }
+//     }
+// }
+
+// fn add_to_node(node: &mut StatsNode, stats: Stats, language: &str, path: &[String]) {
+//     let stats = node.stats.entry(language.to_string()).or_insert(Stats::default());
+//     stats.code += stats.code;
+//     stats.comments += stats.comments;
+//     stats.blanks += stats.blanks;
+
+//     if path.len() > 0 {
+//         node.path = Vec::new();
+//         node.path.push(path[0].clone());
+//         // node.children.insert(path[0].clone(), add_to_node(
+//     }
+// }
+
+#[derive(Clone, Default)]
 struct Stats {
     code: usize,
     comments: usize,
     blanks: usize,
 }
 
-#[derive(Clone)]
-struct StatsNode {
+#[derive(Clone, Default)]
+struct Node {
     stats: BTreeMap<String, Stats>,
-    path: Vec<String>,
-    children: BTreeMap<String, Stats>,
+    children: BTreeMap<String, Node>,
 }
 
-struct StatsEntry {
-    language: String,
-    path: String,
-    code: usize,
-    comments: usize,
-    blanks: usize,
+#[derive(Clone)]
+struct AppState {
+    html: String,
+    tree: Node,
 }
 
-impl StatsNode {
-    pub fn new(path: &[String]) -> Self {
-        Self {
-            stats: BTreeMap::new(),
-            path: path.to_vec(),
-            children: BTreeMap::new(),
+fn add_to_node(node: &mut Node, lang: String, path: &[String], stats: Stats) {
+    let s = node.stats.entry(lang.clone()).or_insert(Stats::default());
+    s.code += stats.code;
+    s.comments += stats.comments;
+    s.blanks += stats.blanks;
+
+    if path.len() > 0 {
+        let child = node.children.entry(path[0].clone()).or_insert(Node::default());
+        add_to_node(child, lang, &path[1..], stats);
+    }
+}
+
+fn html_write_node(html: &mut String, node: &Node, level: usize, key: String) {
+    for (name, child) in &node.children {
+        let mut total_stats = Stats::default();
+        for (_lang, stats) in &child.stats {
+            if true { // filters
+                total_stats.code += stats.code;
+                total_stats.comments += stats.comments;
+                total_stats.blanks += stats.blanks;
+            }
+        }
+        if total_stats.code + total_stats.comments + total_stats.blanks == 0 {
+            continue;
+        }
+
+        let msg = format!("<span><b>{}: </b>{} code, {} comments, {} blanks</span>", name, total_stats.code, total_stats.comments, total_stats.blanks);
+        if child.children.len() > 0 {
+            let child_key = format!("{key}/{name}");
+            let is_open = if level == 0 { "open=\"true\"" } else { "" }; 
+            html.push_str(&format!(r#"<details id="{child_key}" {is_open}><summary>{msg}</summary>"#));
+            html_write_node(html, child, level + 1, child_key);
+            html.push_str("</details>");
+        } else {
+            html.push_str(&format!("<p>{msg}</p>"));
+
         }
     }
 }
 
-fn add_to_node(node: &mut StatsNode, stats: Stats, language: &str, path: &[String]) {
-    let stats = node.stats.entry(language.to_string()).or_insert(Stats::default());
-    stats.code += stats.code;
-    stats.comments += stats.comments;
-    stats.blanks += stats.blanks;
+fn html_build_filters(root_node: &Node) -> String {
+    let mut html = String::from(r#"<div id="filters">"#);
 
-    if path.len() > 0 {
-        node.path = Vec::new();
-        node.path.push(path[0].clone());
-        // node.children.insert(path[0].clone(), add_to_node(
+    for (lang, _) in &root_node.stats {
+        // let checked = filters[lang];
+        html.push_str(
+            &format!(r#"<div class="checkbox-wrapper">
+<input type="checkbox" id="chk-{lang}" data-form-type=other>
+<label for="chk-{lang}">{lang}</label>
+</div>"#
+            )
+        ); // TODO replace event listener with hx-thing
     }
+    html.push_str("</div>");
+    html
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
 
-    let mut tree = StatsNode::new(&Vec::new());
+    // let mut tree = StatsNode::new(&Vec::new());
     let mut entries = Vec::new();
 
+    let t1 = Instant::now();
     let paths = &["orca"];
     let excluded = &[];
     let config = Config::default();
     let mut languages = Languages::new();
+    let t2 = Instant::now();
     languages.get_statistics(paths, excluded, &config);
+    let t3 = Instant::now();
+
+    let mut tree = Node {
+        stats: BTreeMap::new(),
+        children: BTreeMap::new(),
+    };
 
     for (language, language_stats) in &languages {
-        // println!("{}", language);
         for report in &language_stats.reports {
 
-            entries.push(json::object!{
-                language: language.name().to_string(),
-                path: report.name.display().to_string(),
+            let stats = Stats {
                 code: report.stats.code,
                 comments: report.stats.comments,
                 blanks: report.stats.blanks,
+            };
+            add_to_node(&mut tree, language.name().to_string(), &report.name.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(), stats);
+
+            entries.push(json::array!{
+                language.name().to_string(),
+                report.name.display().to_string(),
+                report.stats.code,
+                report.stats.comments,
+                report.stats.blanks,
             });
             let pathvec: Vec<String> = report.name.iter().collect::<Vec<_>>().into_iter().map(|p| p.display().to_string()).collect();
 
@@ -76,17 +178,83 @@ fn main() {
                 comments: report.stats.comments,
                 blanks: report.stats.blanks,
             };
-            add_to_node(&mut tree, stats, language.name(), &pathvec);
+            // add_to_node(&mut tree, stats, language.name(), &pathvec);
 
             // let mut stats_tree = build_tree(&mut stats, &pathvec);
 
-            // println!("  {} {}: {} LOC, {} comments, {} blanks", stats.language, stats.name, stats.code, stats.comments, stats.blanks);
-            // let mut statref = &mut stats;
-            // for p in &report.name {
-            //     println!("    {}", p.display());
-            // }
         }
     }
 
-    println!("var data = {};", json::stringify(entries))
+    let t4 = Instant::now();
+
+    let json_str = json::stringify(entries);
+    let mut file = File::create("list.json").expect("Failed to create list.json");
+    file.write_all(json_str.as_bytes()).expect("Failed to write to list.json");
+
+    let data_js_str = format!("var data = {}", json_str);
+    file = File::create("data.js").expect("Failed to create data.js");
+    file.write_all(data_js_str.as_bytes()).expect("Failed to write to data.js");
+
+    let t5 = Instant::now();
+
+    let mut html = String::new();
+
+    html.push_str(&html_build_filters(&tree));
+    html_write_node(&mut html, &tree, 0, String::from("node::"));
+
+
+
+    println!("config: {:?}", t2 - t1);
+    println!("tokei: {:?}", t3 - t2);
+    println!("tree: {:?}", t4 - t3);
+    println!("write: {:?}", t5 - t4);
+
+    // Router ============================================================
+
+    let state = AppState {
+        html,
+        tree,
+    };
+
+    let app = Router::new()
+        .nest_service("/static", ServeDir::new("static"))
+        .route("/", get(get_root))
+        .route("/tree", get(get_tree))
+        .route("/numbers/{n}", get(number))
+        .route("/path/{path}", get(get_path))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    println!("Listening on localhost:3000");
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> Result<String, String> {
+
+    let mut node = &state.tree;
+    for p in &path {
+        if let Some(n) = &node.children.get(&p.display().to_string()) {
+            node = n;
+        } else {
+            return Err("not found".to_string());
+        }
+    }
+
+    let mut s = String::new();
+    for (name, child) in &node.children {
+        s.push_str(name);
+    }
+    Ok(s)
+}
+
+async fn number(Path(n): Path<i32>) -> String {
+    n.to_string()
+}
+
+async fn get_root() -> Html<&'static str> {
+    Html(include_str!("../static/index.html"))
+}
+
+async fn get_tree(State(state): State<AppState>) -> Html<String> {
+    Html(state.html.clone())
 }

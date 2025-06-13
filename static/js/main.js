@@ -4,41 +4,65 @@ const filters = {
     languages: {},
 }
 
+const I_LANG = 0
+const I_PATH = 1
+const I_CODE = 2
+const I_COMMENTS = 3
+const I_BLANKS = 4
+
+
 const collapseCache = new Map()
+
+let g_tree = {}
 
 let isAllExpanded = false
 
 function collapseAll() {
     isAllExpanded = false
     collapseCache.clear()
-    buildTree()
+    render()
 }
 
 function expandAll() {
     isAllExpanded = true
-    buildTree()
+    render()
 }
 
 function addToNode(node, e, path) {
-    if (filters.languages[e.language]) {
+    if (filters.languages[e[I_LANG]]) {
+        if ("stats" in node) {
+            e[I_LANG] in node.stats || (node.stats[e[I_LANG]] = [0, 0, 0])
+            node.stats[e[I_LANG]][0] += e[I_CODE]
+            node.stats[e[I_LANG]][1] += e[I_COMMENTS]
+            node.stats[e[I_LANG]][2] += e[I_BLANKS]
 
-        e.language in node.stats || (node.stats[e.language] = {
-            code: 0,
-            comments: 0,
-            blanks: 0,
-        })
-        node.stats[e.language].code += e.code
-        node.stats[e.language].comments += e.comments
-        node.stats[e.language].blanks += e.blanks
-
-        if (path.length > 0) {
-            path[0] in node.children || (node.children[path[0]] = {
-                stats: {},
-                children: {},
-            })
-            addToNode(node.children[path[0]], e, path.slice(1))
+            if (path.length > 0) {
+                path[0] in node.children || (node.children[path[0]] = {
+                    stats: {},
+                    children: {},
+                })
+                addToNode(node.children[path[0]], e, path.slice(1))
+            }
         }
     }
+}
+
+function getTotalCode(node) {
+    let total = 0
+    for (const [lang, stats] of Object.entries(node.stats)) {
+        if (filters.languages[lang]) {
+            total += stats[0]
+        }
+    }
+    return total
+}
+
+function sortTreeRecursive(node) {
+    node.children = Object.fromEntries(
+        Object.entries(node.children)
+            .sort((a, b) => getTotalCode(b[1]) - getTotalCode(a[1]))
+    )
+    Object.values(node.children).forEach(sortTreeRecursive)
 }
 
 function htmlWriteNode(html, node, level = 0, key = "node::") {
@@ -46,9 +70,9 @@ function htmlWriteNode(html, node, level = 0, key = "node::") {
         let code = 0, comments = 0, blanks = 0;
         for ([lang, stats] of Object.entries(child.stats)) {
             if (filters.languages[lang]) {
-                code += stats.code
-                comments += stats.comments
-                blanks += stats.blanks
+                code += stats[0]
+                comments += stats[1]
+                blanks += stats[2]
             }
         }
 
@@ -64,20 +88,15 @@ function htmlWriteNode(html, node, level = 0, key = "node::") {
             const details = E('details')
             childKey = key + "/" + name
             details.id = childKey
-            if (level === 0 || collapseCache.get(childKey) || isAllExpanded) {
-                details.open = true;
-            }
-            details.addEventListener("toggle", () => {
-                collapseCache.set(details.id, details.open)
-            })
-
             const summary = E('summary')
             summary.appendChild(msg)
             details.appendChild(summary)
-
+            if (level === 0 || collapseCache.get(childKey) || isAllExpanded) {
+                details.open = true;
+            }
             const childElement = htmlWriteNode(E("span"), child, level + 1, childKey)
-
             details.appendChild(childElement)
+
             html.appendChild(details)
         } else {
             const p = E('p')
@@ -90,7 +109,7 @@ function htmlWriteNode(html, node, level = 0, key = "node::") {
 
 function buildFilters() {
     for (e of data) {
-        filters.languages[e.language] = true
+        filters.languages[e[I_LANG]] = true
     }
 
     const container = document.getElementById("filters")
@@ -103,12 +122,13 @@ function buildFilters() {
         checkbox.type = 'checkbox'
         checkbox.id = 'chk-all'
         checkbox.checked = true
+        checkbox.setAttribute('data-form-type', 'other')
         checkbox.addEventListener('change', () => {
             Object.keys(filters.languages).forEach(key => {
                 filters.languages[key] = checkbox.checked
                 document.getElementById("chk-" + key).checked = checkbox.checked
             })
-            buildTree()
+            render()
         })
 
         const label = E('label')
@@ -129,10 +149,11 @@ function buildFilters() {
         checkbox.type = "checkbox"
         checkbox.id = `chk-${text}`
         checkbox.checked = filters.languages[text]
+        checkbox.setAttribute('data-form-type', 'other')
         checkbox.addEventListener('change', () => {
             filters.languages[text] = checkbox.checked;
             console.log(filters) // TODO remove
-            buildTree()
+            render()
         })
 
         const label = E('label')
@@ -144,11 +165,9 @@ function buildFilters() {
 
         container.appendChild(wrapper)
     })
-
 }
 
 function buildTree() {
-    const start = performance.now()
 
     var tree = {
         stats: {},
@@ -156,26 +175,42 @@ function buildTree() {
     }
 
     for (e of data) {
-        path = e.path.split("\\")
+        path = e[I_PATH].split("\\")
         addToNode(tree, e, path)
     }
 
+    return tree;
+}
+
+function render() {
+    const start = performance.now()
+
+    // let tree = buildTree();
+    // sortTreeRecursive(tree)
+
     const treeBuilt = performance.now()
 
-    html = htmlWriteNode(E("span"), tree)
+    html = htmlWriteNode(E("span"), g_tree)
     tree = document.getElementById("tree")
     tree.innerHTML = ""
     tree.appendChild(html)
 
+    tree.addEventListener('toggle', (e) => {
+        if (e.target.tagName === 'DETAILS') {
+            collapseCache.set(e.target.id, e.target.open)
+        }
+        render()
+    })
+
     const end = performance.now()
-    // const treeBuildTime = 
-    // const elapsed = performance.now() - start
     console.log("tree build: " + (treeBuilt - start) + "ms")
     console.log("dom build: " + (end - treeBuilt) + "ms")
     console.log("total: " + (end - start) + "ms")
 }
 
 document.addEventListener("DOMContentLoaded", function() {
-    buildFilters()
-    buildTree()
+    // buildFilters()
+    // g_tree = buildTree()
+    // sortTreeRecursive(g_tree)
+    // render()
 })

@@ -1,12 +1,12 @@
 /* Prevent content shift when scrollbar appears */
 html {
-  overflow-y: scroll; /* fallback for Safari */
+    overflow-y: scroll; /* fallback for Safari */
 }
 @supports (scrollbar-gutter: stable) {
-  html {
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-  }
+    html {
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+    }
 }
 
 html {
