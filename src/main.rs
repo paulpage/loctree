@@ -229,7 +229,22 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> Result<String, String> {
+fn get_html_for_node(path: &str, node: &Node) -> String {
+    let mut s = String::new();
+    for (name, child) in &node.children {
+        let new_path = if path == "" {
+            name
+        } else {
+            &format!("{}/{}", path, name)
+        };
+        let new_path_escaped = new_path.replace("/", "%2F");
+        let new_id = format!("details-{}", new_path).replace("/", "____");
+        s.push_str(&format!(r###"<details hx-get="/path/{new_path_escaped}" hx-trigger="toggle" hx-target="#{new_id}"><summary>{name}</summary><span id="{new_id}"></span></details>{}"###, "\n"));
+    }
+    s
+}
+
+async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> Result<Html<String>, String> {
 
     let mut node = &state.tree;
     for p in &path {
@@ -240,11 +255,12 @@ async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> R
         }
     }
 
-    let mut s = String::new();
-    for (name, child) in &node.children {
-        s.push_str(name);
-    }
-    Ok(s)
+    // let mut s = String::new();
+    // for (name, child) in &node.children {
+    //     let new_path = format!("{}%2F{}", path.display(), name);
+    //     s.push_str(&format!(r#"<details hx-get="/path/{}" hx-trigger="toggle"><summary>{}</summary></details>{}"#, new_path, name, "\n"));
+    // }
+    Ok(Html(get_html_for_node(&path.display().to_string(), &node)))
 }
 
 async fn number(Path(n): Path<i32>) -> String {
@@ -256,5 +272,8 @@ async fn get_root() -> Html<&'static str> {
 }
 
 async fn get_tree(State(state): State<AppState>) -> Html<String> {
-    Html(state.html.clone())
+    let mut node = &state.tree;
+    Html(get_html_for_node("", node))
+    // let child_name = node.children.keys()[0];
+    // Html(state.html.clone())
 }
