@@ -242,11 +242,22 @@ async fn main() {
 }
 
 fn get_html_for_node(path: &str, node: &Node) -> String {
+    let mut node_stats = Stats::default();
+    for (lang, lang_stats) in &node.stats {
+        if true { // TODO filters
+            node_stats.code += lang_stats.code;
+            node_stats.comments += lang_stats.comments;
+            node_stats.blanks += lang_stats.blanks;
+        }
+    }
+
+    let node_summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", node.name, node_stats.code, node_stats.comments, node_stats.blanks);
+
     if node.children.len() == 0 {
-        return format!("<p>{}</p>\n", node.name);
+        return format!("<p>{}</p>\n", node_summary);
     } else {
         let mut s = String::new();
-        s.push_str(&format!(r#"<details open="true"><summary>{}</summary>{}"#, node.name, "\n"));
+        s.push_str(&format!(r#"<details open="true"><summary>{}</summary>{}"#, node_summary, "\n"));
 
         for (name, child) in &node.children {
             let new_path = if path == "" {
@@ -256,10 +267,22 @@ fn get_html_for_node(path: &str, node: &Node) -> String {
             };
             let new_path_escaped = new_path.replace("/", "%2F");
             let new_id = format!("details-{}", new_path).replace("/", "____");
+
+            let mut stats = Stats::default();
+            for (lang, lang_stats) in &child.stats {
+                if true { // TODO filters
+                    stats.code += lang_stats.code;
+                    stats.comments += lang_stats.comments;
+                    stats.blanks += lang_stats.blanks;
+                }
+            }
+
+            let summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", name, stats.code, stats.comments, stats.blanks);
+
             if child.children.len() == 0 {
-                s.push_str(&format!(r###"<p>{name}</p>{}"###, "\n"));
+                s.push_str(&format!(r###"<p>{summary}</p>{}"###, "\n"));
             } else {
-                s.push_str(&format!(r###"<details hx-get="/path/{new_path_escaped}" hx-trigger="toggle" hx-swap="outerHTML"><summary>{name}</summary><span id="{new_id}"></span></details>{}"###, "\n"));
+                s.push_str(&format!(r###"<details hx-get="/path/{new_path_escaped}" hx-trigger="toggle" hx-swap="outerHTML"><summary>{summary}</summary><span id="{new_id}"></span></details>{}"###, "\n"));
             }
 
         }
