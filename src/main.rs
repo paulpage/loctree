@@ -241,15 +241,18 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-fn get_html_for_node(path: &str, node: &Node) -> String {
-    let mut node_stats = Stats::default();
-    for (lang, lang_stats) in &node.stats {
-        if true { // TODO filters
-            node_stats.code += lang_stats.code;
-            node_stats.comments += lang_stats.comments;
-            node_stats.blanks += lang_stats.blanks;
-        }
+fn collect_stats(n: &Node) -> Stats {
+    let mut stats = Stats::default();
+    for (lang, lang_stats) in &n.stats {
+        stats.code += lang_stats.code;
+        stats.comments += lang_stats.comments;
+        stats.blanks += lang_stats.blanks;
     }
+    stats
+}
+
+fn get_html_for_node(path: &str, node: &Node) -> String {
+    let mut node_stats = collect_stats(node);
 
     let node_summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", node.name, node_stats.code, node_stats.comments, node_stats.blanks);
 
@@ -259,25 +262,25 @@ fn get_html_for_node(path: &str, node: &Node) -> String {
         let mut s = String::new();
         s.push_str(&format!(r#"<details open="true"><summary>{}</summary>{}"#, node_summary, "\n"));
 
-        for (name, child) in &node.children {
+        let mut sorted_children: Vec<Node> = node.children.values().cloned().collect();
+        sorted_children.sort_by(|a, b| {
+            let astats = collect_stats(a);
+            let bstats = collect_stats(b);
+            bstats.code.cmp(&astats.code)
+        });
+
+        for child in &sorted_children {
             let new_path = if path == "" {
-                name
+                &child.name
             } else {
-                &format!("{}/{}", path, name)
+                &format!("{}/{}", path, child.name)
             };
             let new_path_escaped = new_path.replace("/", "%2F");
             let new_id = format!("details-{}", new_path).replace("/", "____");
 
-            let mut stats = Stats::default();
-            for (lang, lang_stats) in &child.stats {
-                if true { // TODO filters
-                    stats.code += lang_stats.code;
-                    stats.comments += lang_stats.comments;
-                    stats.blanks += lang_stats.blanks;
-                }
-            }
+            let mut stats = collect_stats(child);
 
-            let summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", name, stats.code, stats.comments, stats.blanks);
+            let summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", child.name, stats.code, stats.comments, stats.blanks);
 
             if child.children.len() == 0 {
                 s.push_str(&format!(r###"<p>{summary}</p>{}"###, "\n"));
