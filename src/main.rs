@@ -67,8 +67,19 @@ struct Stats {
 
 #[derive(Clone, Default)]
 struct Node {
+    name: String,
     stats: BTreeMap<String, Stats>,
     children: BTreeMap<String, Node>,
+}
+
+impl Node {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            stats: BTreeMap::new(),
+            children: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -84,7 +95,7 @@ fn add_to_node(node: &mut Node, lang: String, path: &[String], stats: Stats) {
     s.blanks += stats.blanks;
 
     if path.len() > 0 {
-        let child = node.children.entry(path[0].clone()).or_insert(Node::default());
+        let child = node.children.entry(path[0].clone()).or_insert(Node::new(&path[0]));
         add_to_node(child, lang, &path[1..], stats);
     }
 }
@@ -150,6 +161,7 @@ async fn main() {
     let t3 = Instant::now();
 
     let mut tree = Node {
+        name: String::new(),
         stats: BTreeMap::new(),
         children: BTreeMap::new(),
     };
@@ -230,18 +242,30 @@ async fn main() {
 }
 
 fn get_html_for_node(path: &str, node: &Node) -> String {
-    let mut s = String::new();
-    for (name, child) in &node.children {
-        let new_path = if path == "" {
-            name
-        } else {
-            &format!("{}/{}", path, name)
-        };
-        let new_path_escaped = new_path.replace("/", "%2F");
-        let new_id = format!("details-{}", new_path).replace("/", "____");
-        s.push_str(&format!(r###"<details hx-get="/path/{new_path_escaped}" hx-trigger="toggle" hx-target="#{new_id}"><summary>{name}</summary><span id="{new_id}"></span></details>{}"###, "\n"));
+    if node.children.len() == 0 {
+        return format!("<p>{}</p>\n", node.name);
+    } else {
+        let mut s = String::new();
+        s.push_str(&format!(r#"<details open="true"><summary>{}</summary>{}"#, node.name, "\n"));
+
+        for (name, child) in &node.children {
+            let new_path = if path == "" {
+                name
+            } else {
+                &format!("{}/{}", path, name)
+            };
+            let new_path_escaped = new_path.replace("/", "%2F");
+            let new_id = format!("details-{}", new_path).replace("/", "____");
+            if child.children.len() == 0 {
+                s.push_str(&format!(r###"<p>{name}</p>{}"###, "\n"));
+            } else {
+                s.push_str(&format!(r###"<details hx-get="/path/{new_path_escaped}" hx-trigger="toggle" hx-swap="outerHTML"><summary>{name}</summary><span id="{new_id}"></span></details>{}"###, "\n"));
+            }
+
+        }
+        s.push_str("</details>");
+        s
     }
-    s
 }
 
 async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> Result<Html<String>, String> {
@@ -255,11 +279,6 @@ async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> R
         }
     }
 
-    // let mut s = String::new();
-    // for (name, child) in &node.children {
-    //     let new_path = format!("{}%2F{}", path.display(), name);
-    //     s.push_str(&format!(r#"<details hx-get="/path/{}" hx-trigger="toggle"><summary>{}</summary></details>{}"#, new_path, name, "\n"));
-    // }
     Ok(Html(get_html_for_node(&path.display().to_string(), &node)))
 }
 
@@ -272,8 +291,7 @@ async fn get_root() -> Html<&'static str> {
 }
 
 async fn get_tree(State(state): State<AppState>) -> Html<String> {
-    let mut node = &state.tree;
-    Html(get_html_for_node("", node))
-    // let child_name = node.children.keys()[0];
-    // Html(state.html.clone())
+    
+    let mut node = &state.tree.children.first_key_value().unwrap().1;
+    Html(get_html_for_node(&node.name, node))
 }
