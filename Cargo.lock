@@ -776,6 +776,7 @@ dependencies = [
  "json",
  "tokei",
  "tokio",
+ "tower",
  "tower-http",
 ]
 

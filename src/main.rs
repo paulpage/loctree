@@ -4,6 +4,7 @@ use tokei::{Config, Languages};
 use std::fs::File;
 use std::io::Write;
 use std::time::Instant;
+use std::sync::Arc;
 use axum::{
     routing::get,
     Router,
@@ -11,7 +12,10 @@ use axum::{
     extract::{Path, State},
     response::Html,
 };
-use tower_http::services::ServeDir;
+use tower_http::{
+    services::ServeDir,
+    trace::TraceLayer,
+};
 
 // #[derive(Copy, Clone, Default)]
 // struct Stats {
@@ -58,6 +62,69 @@ use tower_http::services::ServeDir;
 //     }
 // }
 
+
+// ============================================================
+
+use axum::{body::Body, http::{Request}};
+use std::task::{Context, Poll};
+use tower::{Layer, Service};
+use std::pin::Pin;
+use std::future::Future;
+
+#[derive(Clone)]
+struct LogMiddleware<S> {
+    inner: S,
+}
+
+impl<S> Service<Request<Body>> for LogMiddleware<S>
+where
+    S: Service<Request<Body>, Response = axum::response::Response> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: std::fmt::Debug,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let start = Instant::now();
+        let method = req.method().clone();
+        let uri = req.uri().clone();
+        let fut = self.inner.call(req);
+
+        Box::pin(async move {
+            let res = fut.await?;
+            let status = res.status();
+            let duration = start.elapsed();
+            println!(
+                "{} {} {} - {}ms",
+                method,
+                uri,
+                status.as_u16(),
+                duration.as_millis()
+            );
+            Ok(res)
+        })
+    }
+}
+
+#[derive(Clone)]
+struct LogLayer;
+
+impl<S> Layer<S> for LogLayer {
+    type Service = LogMiddleware<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        LogMiddleware { inner }
+    }
+}
+
+// ============================================================
+
 #[derive(Clone, Default)]
 struct Stats {
     code: usize,
@@ -84,7 +151,6 @@ impl Node {
 
 #[derive(Clone)]
 struct AppState {
-    html: String,
     tree: Node,
 }
 
@@ -97,34 +163,6 @@ fn add_to_node(node: &mut Node, lang: String, path: &[String], stats: Stats) {
     if path.len() > 0 {
         let child = node.children.entry(path[0].clone()).or_insert(Node::new(&path[0]));
         add_to_node(child, lang, &path[1..], stats);
-    }
-}
-
-fn html_write_node(html: &mut String, node: &Node, level: usize, key: String) {
-    for (name, child) in &node.children {
-        let mut total_stats = Stats::default();
-        for (_lang, stats) in &child.stats {
-            if true { // filters
-                total_stats.code += stats.code;
-                total_stats.comments += stats.comments;
-                total_stats.blanks += stats.blanks;
-            }
-        }
-        if total_stats.code + total_stats.comments + total_stats.blanks == 0 {
-            continue;
-        }
-
-        let msg = format!("<span><b>{}: </b>{} code, {} comments, {} blanks</span>", name, total_stats.code, total_stats.comments, total_stats.blanks);
-        if child.children.len() > 0 {
-            let child_key = format!("{key}/{name}");
-            let is_open = if level == 0 { "open=\"true\"" } else { "" }; 
-            html.push_str(&format!(r#"<details id="{child_key}" {is_open}><summary>{msg}</summary>"#));
-            html_write_node(html, child, level + 1, child_key);
-            html.push_str("</details>");
-        } else {
-            html.push_str(&format!("<p>{msg}</p>"));
-
-        }
     }
 }
 
@@ -152,7 +190,7 @@ async fn main() {
     let mut entries = Vec::new();
 
     let t1 = Instant::now();
-    let paths = &["orca"];
+    let paths = &["chromium"];
     let excluded = &[];
     let config = Config::default();
     let mut languages = Languages::new();
@@ -190,10 +228,6 @@ async fn main() {
                 comments: report.stats.comments,
                 blanks: report.stats.blanks,
             };
-            // add_to_node(&mut tree, stats, language.name(), &pathvec);
-
-            // let mut stats_tree = build_tree(&mut stats, &pathvec);
-
         }
     }
 
@@ -209,13 +243,6 @@ async fn main() {
 
     let t5 = Instant::now();
 
-    let mut html = String::new();
-
-    html.push_str(&html_build_filters(&tree));
-    html_write_node(&mut html, &tree, 0, String::from("node::"));
-
-
-
     println!("config: {:?}", t2 - t1);
     println!("tokei: {:?}", t3 - t2);
     println!("tree: {:?}", t4 - t3);
@@ -223,10 +250,10 @@ async fn main() {
 
     // Router ============================================================
 
-    let state = AppState {
-        html,
+    let app_state = AppState {
         tree,
     };
+    let state = Arc::new(app_state);
 
     let app = Router::new()
         .nest_service("/static", ServeDir::new("static"))
@@ -234,7 +261,8 @@ async fn main() {
         .route("/tree", get(get_tree))
         .route("/numbers/{n}", get(number))
         .route("/path/{path}", get(get_path))
-        .with_state(state);
+        .with_state(state)
+        .layer(LogLayer);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("Listening on localhost:3000");
@@ -252,6 +280,7 @@ fn collect_stats(n: &Node) -> Stats {
 }
 
 fn get_html_for_node(path: &str, node: &Node) -> String {
+    let start = Instant::now();
     let mut node_stats = collect_stats(node);
 
     let node_summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", node.name, node_stats.code, node_stats.comments, node_stats.blanks);
@@ -290,12 +319,15 @@ fn get_html_for_node(path: &str, node: &Node) -> String {
 
         }
         s.push_str("</details>");
+        let end = Instant::now();
+        println!("get_node {:?}", end - start);
         s
     }
 }
 
-async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> Result<Html<String>, String> {
+async fn get_path(State(state): State<Arc<AppState>>, Path(path): Path<PathBuf>) -> Result<Html<String>, String> {
 
+    let t1 = Instant::now();
     let mut node = &state.tree;
     for p in &path {
         if let Some(n) = &node.children.get(&p.display().to_string()) {
@@ -304,8 +336,15 @@ async fn get_path(State(state): State<AppState>, Path(path): Path<PathBuf>) -> R
             return Err("not found".to_string());
         }
     }
+    let t2 = Instant::now();
+    println!("prep path {:?}", t2 - t1);
 
-    Ok(Html(get_html_for_node(&path.display().to_string(), &node)))
+    let result = Ok(Html(get_html_for_node(&path.display().to_string(), &node)));
+
+    let t3 = Instant::now();
+    println!("outside get_node {:?}", t3 - t2);
+
+    result
 }
 
 async fn number(Path(n): Path<i32>) -> String {
@@ -316,7 +355,7 @@ async fn get_root() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
-async fn get_tree(State(state): State<AppState>) -> Html<String> {
+async fn get_tree(State(state): State<Arc<AppState>>) -> Html<String> {
     
     let mut node = &state.tree.children.first_key_value().unwrap().1;
     Html(get_html_for_node(&node.name, node))
