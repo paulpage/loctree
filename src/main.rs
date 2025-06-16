@@ -6,7 +6,7 @@ use std::io::Write;
 use std::time::Instant;
 use std::sync::Arc;
 use axum::{
-    routing::get,
+    routing::{get, post},
     Router,
     http::StatusCode,
     extract::{Path, State},
@@ -16,6 +16,7 @@ use tower_http::{
     services::ServeDir,
     trace::TraceLayer,
 };
+use tokio::sync::Mutex;
 
 // #[derive(Copy, Clone, Default)]
 // struct Stats {
@@ -149,9 +150,10 @@ impl Node {
     }
 }
 
-#[derive(Clone)]
+// #[derive(Clone)]
 struct AppState {
     tree: Node,
+    filters: Mutex<BTreeMap<String, bool>>,
 }
 
 fn add_to_node(node: &mut Node, lang: String, path: &[String], stats: Stats) {
@@ -190,7 +192,7 @@ async fn main() {
     let mut entries = Vec::new();
 
     let t1 = Instant::now();
-    let paths = &["chromium"];
+    let paths = &["orca"];
     let excluded = &[];
     let config = Config::default();
     let mut languages = Languages::new();
@@ -204,7 +206,12 @@ async fn main() {
         children: BTreeMap::new(),
     };
 
+    let mut filters = BTreeMap::new();
+
     for (language, language_stats) in &languages {
+
+        filters.insert(language.name().to_string(), true);
+
         for report in &language_stats.reports {
 
             let stats = Stats {
@@ -252,6 +259,7 @@ async fn main() {
 
     let app_state = AppState {
         tree,
+        filters: Mutex::new(filters),
     };
     let state = Arc::new(app_state);
 
@@ -259,8 +267,10 @@ async fn main() {
         .nest_service("/static", ServeDir::new("static"))
         .route("/", get(get_root))
         .route("/tree", get(get_tree))
-        .route("/numbers/{n}", get(number))
         .route("/path/{path}", get(get_path))
+        .route("/filters/{language}", post(toggle_filter))
+        // .route("/expand/{path}", post(expand_path))
+        // .route("/collapse/{path}", post(collapse_path))
         .with_state(state)
         .layer(LogLayer);
 
@@ -269,19 +279,21 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-fn collect_stats(n: &Node) -> Stats {
+fn collect_stats(n: &Node, filters: &BTreeMap<String, bool>) -> Stats {
     let mut stats = Stats::default();
     for (lang, lang_stats) in &n.stats {
-        stats.code += lang_stats.code;
-        stats.comments += lang_stats.comments;
-        stats.blanks += lang_stats.blanks;
+        if *filters.get(lang).unwrap_or(&false) {
+            stats.code += lang_stats.code;
+            stats.comments += lang_stats.comments;
+            stats.blanks += lang_stats.blanks;
+        }
     }
     stats
 }
 
-fn get_html_for_node(path: &str, node: &Node) -> String {
+fn get_html_for_node(path: &str, node: &Node, filters: &BTreeMap<String, bool>) -> String {
     let start = Instant::now();
-    let mut node_stats = collect_stats(node);
+    let mut node_stats = collect_stats(node, filters);
 
     let node_summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", node.name, node_stats.code, node_stats.comments, node_stats.blanks);
 
@@ -293,8 +305,8 @@ fn get_html_for_node(path: &str, node: &Node) -> String {
 
         let mut sorted_children: Vec<Node> = node.children.values().cloned().collect();
         sorted_children.sort_by(|a, b| {
-            let astats = collect_stats(a);
-            let bstats = collect_stats(b);
+            let astats = collect_stats(a, filters);
+            let bstats = collect_stats(b, filters);
             bstats.code.cmp(&astats.code)
         });
 
@@ -307,7 +319,7 @@ fn get_html_for_node(path: &str, node: &Node) -> String {
             let new_path_escaped = new_path.replace("/", "%2F");
             let new_id = format!("details-{}", new_path).replace("/", "____");
 
-            let mut stats = collect_stats(child);
+            let mut stats = collect_stats(child, filters);
 
             let summary = format!("<b>{}</b>: {} code, {} comments, {} blanks", child.name, stats.code, stats.comments, stats.blanks);
 
@@ -325,6 +337,50 @@ fn get_html_for_node(path: &str, node: &Node) -> String {
     }
 }
 
+fn get_html_for_filters(filters: &BTreeMap<String, bool>) -> String {
+    let mut s = String::new();
+    s.push_str(r#"<div id="filters">"#);
+    s.push_str(&format!(r###"<div class="checkbox-wrapper"><input type="checkbox" id="chk-all" checked data-form-type="other" hx-post="/filters/all" hx-target="#tree"></input><label for="chk-all">(All)</label></div>{}"###, "\n"));
+    for (language, enabled) in filters {
+        let id = format!("chk-{language}");
+        let checked = if *enabled { "checked" } else { "" };
+        s.push_str(&format!(r###"<div class="checkbox-wrapper"><input type="checkbox" id="{id}" {checked} data-form-type="other" hx-post="/filters/{language}" hx-target="#tree"></input><label for="{id}">{language}</label></div>{}"###, "\n"));
+    }
+    s.push_str("</div>");
+    s
+}
+
+async fn toggle_filter(State(state): State<Arc<AppState>>, Path(language): Path<String>) -> Html<String> {
+    {
+        let mut filters = &mut state.filters.lock().await;
+
+        if &language == "all" {
+            let mut toggle_direction = true;
+            for (_, val) in filters.iter() {
+                if *val {
+                    toggle_direction = false;
+                }
+            }
+            for (lang, val) in filters.iter_mut() {
+                *val = toggle_direction;
+            }
+        } else {
+            if let Some(val) = filters.get_mut(&language) {
+                *val = !(*val);
+            }
+        }
+    }
+
+    {
+        let filters = state.filters.lock().await;
+        for (lang, enabled) in filters.iter() {
+            println!("{lang}: {enabled}");
+        }
+    }
+
+    get_tree(State(state)).await
+}
+
 async fn get_path(State(state): State<Arc<AppState>>, Path(path): Path<PathBuf>) -> Result<Html<String>, String> {
 
     let t1 = Instant::now();
@@ -339,7 +395,9 @@ async fn get_path(State(state): State<Arc<AppState>>, Path(path): Path<PathBuf>)
     let t2 = Instant::now();
     println!("prep path {:?}", t2 - t1);
 
-    let result = Ok(Html(get_html_for_node(&path.display().to_string(), &node)));
+    let filters = state.filters.lock().await;
+
+    let result = Ok(Html(get_html_for_node(&path.display().to_string(), &node, &filters)));
 
     let t3 = Instant::now();
     println!("outside get_node {:?}", t3 - t2);
@@ -347,16 +405,15 @@ async fn get_path(State(state): State<Arc<AppState>>, Path(path): Path<PathBuf>)
     result
 }
 
-async fn number(Path(n): Path<i32>) -> String {
-    n.to_string()
-}
-
 async fn get_root() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
 async fn get_tree(State(state): State<Arc<AppState>>) -> Html<String> {
-    
     let mut node = &state.tree.children.first_key_value().unwrap().1;
-    Html(get_html_for_node(&node.name, node))
+    let mut s = String::new();
+    let filters = state.filters.lock().await;
+    s.push_str(&get_html_for_filters(&filters));
+    s.push_str(&get_html_for_node(&node.name, node, &filters));
+    Html(s)
 }

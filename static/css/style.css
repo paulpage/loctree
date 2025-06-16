@@ -29,7 +29,7 @@ p {
     gap: 20px; /* space between checkboxes */
 }
 .checkbox-wrapper {
-    /* display: flex; */
+    display: flex;
     /* flex-direction: column; */
     /* align-items: center; */
     /* font-family: sans-serif; */
