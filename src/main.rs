@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use tokei::{Config, Languages};
 use std::fs::File;
@@ -153,7 +153,8 @@ impl Node {
 // #[derive(Clone)]
 struct AppState {
     tree: Node,
-    filters: Mutex<BTreeMap<String, bool>>,
+    filters: BTreeMap<String, bool>,
+    expanded: HashSet<String>,
 }
 
 fn add_to_node(node: &mut Node, lang: String, path: &[String], stats: Stats) {
@@ -259,9 +260,10 @@ async fn main() {
 
     let app_state = AppState {
         tree,
-        filters: Mutex::new(filters),
+        filters,
+        expanded: HashSet::new(),
     };
-    let state = Arc::new(app_state);
+    let state = Arc::new(Mutex::new(app_state));
 
     let app = Router::new()
         .nest_service("/static", ServeDir::new("static"))
@@ -269,8 +271,8 @@ async fn main() {
         .route("/tree", get(get_tree))
         .route("/path/{path}", get(get_path))
         .route("/filters/{language}", post(toggle_filter))
-        // .route("/expand/{path}", post(expand_path))
-        // .route("/collapse/{path}", post(collapse_path))
+        .route("/expand/{path}", post(expand_path))
+        .route("/collapse/{path}", post(collapse_path))
         .with_state(state)
         .layer(LogLayer);
 
@@ -291,7 +293,7 @@ fn collect_stats(n: &Node, filters: &BTreeMap<String, bool>) -> Stats {
     stats
 }
 
-fn get_html_for_node(path: &str, node: &Node, filters: &BTreeMap<String, bool>) -> String {
+fn get_html_for_node(path: &str, node: &Node, filters: &BTreeMap<String, bool>, expanded: &HashSet<String>) -> String {
     let start = Instant::now();
     let mut node_stats = collect_stats(node, filters);
 
@@ -301,6 +303,7 @@ fn get_html_for_node(path: &str, node: &Node, filters: &BTreeMap<String, bool>) 
         return format!("<p>{}</p>\n", node_summary);
     } else {
         let mut s = String::new();
+        // s.push_str(&format!(r#"<details open="true" hx-post="/collapse/{path}"><summary>{}</summary>{}"#, node_summary, "\n"));
         s.push_str(&format!(r#"<details open="true"><summary>{}</summary>{}"#, node_summary, "\n"));
 
         let mut sorted_children: Vec<Node> = node.children.values().cloned().collect();
@@ -326,11 +329,25 @@ fn get_html_for_node(path: &str, node: &Node, filters: &BTreeMap<String, bool>) 
             if child.children.len() == 0 {
                 s.push_str(&format!(r###"<p>{summary}</p>{}"###, "\n"));
             } else {
-                s.push_str(&format!(r###"<details hx-get="/path/{new_path_escaped}" hx-trigger="toggle" hx-swap="outerHTML"><summary>{summary}</summary><span id="{new_id}"></span></details>{}"###, "\n"));
+                if expanded.contains(new_path) {
+                    s.push_str(&get_html_for_node(new_path, child, filters, expanded));
+                    // s.push_str(&format!(r###"<details open="true" hx-post="/collapse/{new_path_escaped}" hx-trigger="toggle"><summary>{summary}</summary><span id="{new_id}"></span></details>{}"###, "\n"));
+                } else {
+                    s.push_str(&format!(r###"<details id="{new_id}" hx-get="/path/{new_path_escaped}" hx-trigger="toggle" hx-swap="outerHTML"><summary>{summary}</summary></details>{}"###, "\n"));
+                }
             }
 
         }
         s.push_str("</details>");
+        // s.push_str(r###"
+// <script>
+  // document.querySelectorAll('details').forEach(el => {
+    // el.addEventListener('toggle', function(event) {
+      // event.stopPropagation();
+    // });
+  // });
+// </script>
+        //   "###);
         let end = Instant::now();
         println!("get_node {:?}", end - start);
         s
@@ -350,70 +367,122 @@ fn get_html_for_filters(filters: &BTreeMap<String, bool>) -> String {
     s
 }
 
-async fn toggle_filter(State(state): State<Arc<AppState>>, Path(language): Path<String>) -> Html<String> {
+async fn toggle_filter(State(state): State<Arc<Mutex<AppState>>>, Path(language): Path<String>) -> Html<String> {
     {
-        let mut filters = &mut state.filters.lock().await;
-
-        if &language == "all" {
-            let mut toggle_direction = true;
-            for (_, val) in filters.iter() {
-                if *val {
-                    toggle_direction = false;
+        let mut state = state.lock().await;
+        {
+            if &language == "all" {
+                let mut toggle_direction = true;
+                for (_, val) in state.filters.iter() {
+                    if *val {
+                        toggle_direction = false;
+                    }
+                }
+                for (lang, val) in state.filters.iter_mut() {
+                    *val = toggle_direction;
+                }
+            } else {
+                if let Some(val) = state.filters.get_mut(&language) {
+                    *val = !(*val);
                 }
             }
-            for (lang, val) in filters.iter_mut() {
-                *val = toggle_direction;
-            }
-        } else {
-            if let Some(val) = filters.get_mut(&language) {
-                *val = !(*val);
-            }
         }
-    }
 
-    {
-        let filters = state.filters.lock().await;
-        for (lang, enabled) in filters.iter() {
-            println!("{lang}: {enabled}");
+        {
+            // let filters = state.filters.lock().await;
+            // for (lang, enabled) in state.filters.iter() {
+            //     println!("{lang}: {enabled}");
+            // }
         }
     }
 
     get_tree(State(state)).await
 }
 
-async fn get_path(State(state): State<Arc<AppState>>, Path(path): Path<PathBuf>) -> Result<Html<String>, String> {
+async fn get_path(State(state): State<Arc<Mutex<AppState>>>, Path(path): Path<PathBuf>) -> Result<Html<String>, String> {
+    let mut result = {
+        let mut state = state.lock().await;
 
-    let t1 = Instant::now();
-    let mut node = &state.tree;
-    for p in &path {
-        if let Some(n) = &node.children.get(&p.display().to_string()) {
-            node = n;
-        } else {
-            return Err("not found".to_string());
+        let t1 = Instant::now();
+        let mut node = &state.tree;
+        for p in &path {
+            if let Some(n) = &node.children.get(&p.display().to_string()) {
+                node = n;
+            } else {
+                return Err("not found".to_string());
+            }
         }
-    }
-    let t2 = Instant::now();
-    println!("prep path {:?}", t2 - t1);
+        let t2 = Instant::now();
+        println!("prep path {:?}", t2 - t1);
 
-    let filters = state.filters.lock().await;
+        // let filters = state.filters.lock().await;
 
-    let result = Ok(Html(get_html_for_node(&path.display().to_string(), &node, &filters)));
+        get_html_for_node(&path.display().to_string(), &node, &state.filters, &state.expanded)
+    };
 
-    let t3 = Instant::now();
-    println!("outside get_node {:?}", t3 - t2);
+    result.push_str(r###"
+        <script>
+document.querySelectorAll('details').forEach(details => {
+        details.addEventListener('toggle', event => {
+        const el = event.target
+            console.log(el, el.hasAttribute('open'))
+            if (el.hasAttribute('open')) {
+                if (el.id) {
+                    htmx.ajax('POST', `/expand/${el.id}`)
+                }
+            } else {
+                if (el.id) {
+                    htmx.ajax('POST', `/collapse/${el.id}`)
+                }
+            }
+          event.stopPropagation();
+        })
+})
+</script>
+    "###);
 
-    result
+    // println!("about to expand {path:?}");
+    // expand_path(State(state), Path(path)).await;
+
+    // let t3 = Instant::now();
+    // println!("outside get_node {:?}", t3 - t2);
+
+    Ok(Html(result))
 }
+
+async fn expand_path(State(state): State<Arc<Mutex<AppState>>>, Path(path): Path<String>) {
+    let mut state = state.lock().await;
+    state.expanded.insert(path);
+
+    println!("============= expand");
+    for s in &state.expanded {
+        println!("expanded {s}");
+    }
+    println!("=============");
+}
+
+async fn collapse_path(State(state): State<Arc<Mutex<AppState>>>, Path(path): Path<String>) {
+    let mut state = state.lock().await;
+    state.expanded.remove(&path);
+
+    println!("============= collapse");
+    for s in &state.expanded {
+        println!("expanded {s}");
+    }
+    println!("=============");
+}
+
 
 async fn get_root() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
-async fn get_tree(State(state): State<Arc<AppState>>) -> Html<String> {
+async fn get_tree(State(state): State<Arc<Mutex<AppState>>>) -> Html<String> {
+    let mut state = state.lock().await;
     let mut node = &state.tree.children.first_key_value().unwrap().1;
     let mut s = String::new();
-    let filters = state.filters.lock().await;
-    s.push_str(&get_html_for_filters(&filters));
-    s.push_str(&get_html_for_node(&node.name, node, &filters));
+    // let filters = state.filters.lock().await;
+    s.push_str(&get_html_for_filters(&state.filters));
+    s.push_str(&get_html_for_node(&node.name, node, &state.filters, &state.expanded));
     Html(s)
 }

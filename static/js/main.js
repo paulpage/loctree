@@ -213,4 +213,28 @@ document.addEventListener("DOMContentLoaded", function() {
     // g_tree = buildTree()
     // sortTreeRecursive(g_tree)
     // render()
+    // document.body.addEventListener('toggle', function(event) {
+    //     console.log('hello')
+    //     const details = event.target
+    //     if (!(details instanceof HTMLDetailsElement)) return
+
+    //     console.log(details.hasAttribute('open'))
+    //     if (details.hasAttribute('open')) {
+    //         htmx.ajax('POST', `/collapse/${details.id}`)
+    //     } else {
+    //         htmx.ajax('POST', `/expand/${details.id}`)
+    //     }
+    // })
+
+// document.querySelectorAll('details').forEach(details => {
+//         console.log(details.hasAttribute('open'))
+//         if (details.hasAttribute('open')) {
+//             if (details.id) {
+//                 htmx.ajax('POST', `/collapse/${details.id}`)
+//             }
+//         } else {
+//             htmx.ajax('POST', `/expand/${details.id}`)
+//         }
+// });
 })
+
